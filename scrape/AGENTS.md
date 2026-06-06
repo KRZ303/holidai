@@ -1,64 +1,85 @@
 # AGENTS.md
 
-Operating contract for autonomous agents working in this workspace (`~/Dev/holidai/scrape`).
+Operating contract for autonomous agents working in `~/Dev/holidai/scrape`.
 
-## 1. Project Context & Workspace Map
+## 1. Project Context
 
-This workspace contains tooling to verify, update, and detail a Booking.com CSV matrix file using an automated script connected to a running Google Chrome Beta session via the Chrome Debugging Protocol (CDP).
+This directory contains the Booking.com matrix verification flow:
 
-- **Script:** [verify_matrix.py](file:///Users/krz/Dev/holidai/scrape/verify_matrix.py)
-- **Plan:** [scrape-plan.md](file:///Users/krz/Dev/holidai/scrape/scrape-plan.md)
-- **Input CSV Directory:** `/Users/krz/Dev/holidai/research/`
-  - Example: `booking_matrix_turcja_kreta.csv` or `booking_matrix_albania_grecja_cypr.csv`
-- **Output Verified CSV:** `/Users/krz/Dev/holidai/scrape/{csv_name}_VERIFIED.csv`
-- **Progress Cache:** `/Users/krz/Dev/holidai/scrape/{csv_name}_cache.json` (enables resumability)
-- **Markdown Outputs Directory:** `/Users/krz/Dev/holidai/scrape/{csv_name}_MD/`
-- **Discrepancy Report:** `/Users/krz/Dev/holidai/scrape/{csv_name}_discrepancies.md`
+- Script: [verify_matrix.py](/Users/krz/Dev/holidai/scrape/verify_matrix.py)
+- Local plan/spec: [scrape-plan.md](/Users/krz/Dev/holidai/scrape/scrape-plan.md)
+- CDP helper copy: [cdp_helper.js](/Users/krz/Dev/holidai/scrape/cdp_helper.js)
+- Shared Chrome helper: [chrome_control.py](/Users/krz/Dev/holidai/chrome-scrape-control/chrome_control.py)
+- Input CSV directory: `/Users/krz/Dev/holidai/research/`
+- Outputs:
+  - verified CSV: `/Users/krz/Dev/holidai/scrape/{csv_name}_VERIFIED.csv`
+  - cache: `/Users/krz/Dev/holidai/scrape/{csv_name}_cache.json`
+  - markdown directory: `/Users/krz/Dev/holidai/scrape/{csv_name}_MD/`
+  - discrepancy report: `/Users/krz/Dev/holidai/scrape/{csv_name}_discrepancies.md`
 
----
+## 2. Hard Execution Guardrails
 
-## 2. Prerequisites & Chrome Beta Setup
+Run this scraper in one foreground terminal session only.
 
-Before running the verification script, Chrome Beta must be running with port debugging enabled:
+- Do not use `/goal`, subagents, timers, monitors, background watchers, browser tools, or repeated automation loops around the scraper.
+- Do not open separate automation browsers. The scraper talks directly to the Chrome DevTools Protocol on port `9222`.
+- The user owns browser readiness. The script must pause before navigation until the user confirms the browser state.
 
-1. **Quit Chrome Beta completely** (ensure no background processes are running: `Cmd + Q`).
-2. **Launch Chrome Beta via Terminal** with the remote debugging parameter:
-   ```bash
-   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta" --remote-debugging-port=9222
-   ```
-3. **Log in** to your Booking.com account in that browser instance (this ensures Genius discounts and currency are applied).
+## 3. Chrome Setup
 
----
+Use stable Google Chrome only.
 
-## 3. Iteration & Scraping Rules (Execution Logic)
+1. Quit Google Chrome completely if you want a fresh debug session.
+2. Launch Chrome from Terminal with the dedicated scraper profile:
 
-1. **Uniqueness:** Group CSV rows by the base hotel URL (parameters stripped) and name.
-2. **Stay Lengths:** Iteratively open URLs for 8, 11, and 14 days (constructed via checkout parameter).
-3. **Prices:** Read the exact price for each stay length. If unavailable or sold out, record `-1`.
-4. **Scrolling & Expansion:** Scroll to the bottom of each page to trigger lazy loading. Click `#facilities-tab-trigger` and wait 1 second to load complete amenities.
-5. **Washing Machine Verification (`pralka`):**
-   - Check room details and facilities for "pralka", "washing machine", "pralki", etc.
-   - If found in facilities/rooms: `pralka_potwierdzona = True`, `pralka_tylko_opinia = False`.
-   - If found only in general text (reviews): `pralka_potwierdzona = False`, `pralka_tylko_opinia = True`.
-   - Otherwise, both are `False`.
-6. **Other Features:** Extract boolean indicators for laundry service (`usluga_prania`), kitchen (`kuchnia`), private bathroom (`prywatna_lazienka`), beachfront, sea view, and parking.
-7. **Markdown Files per Hotel:** Generate `{Country}-{HotelName}.md` containing:
-   - A) Header Section: Hotel name, full address, geographic coordinates, visible photo links.
-   - B) Availability: stay prices and a formatted markdown table of all rooms.
-   - C) Guest Reviews: rating, review count, list of up to 10 comments.
-   - D) Surroundings: Neighborhood (Area Info).
-   - E) Property Facilities: list of all amenities and washing machine summary.
-   - F) House Rules & Important Info: regulamin (House Rules) and ważne informacje (Important Info).
-   - Podsumowanie (autorska ocena): location, washing machine, beach distance, price-to-quality.
-8. **Stuck Handling:** If the title is empty (CAPTCHA) or navigation fails, print an alert to stdout and wait for stdin. If no input is received within 20 seconds, mark the price as `TBD` and proceed to the next hotel.
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="/Users/krz/Dev/holidai/scrape/chrome-profile" "https://www.booking.com"
+```
 
----
+3. Log in to Booking.com in that Chrome profile if needed.
+4. Leave exactly one Booking.com tab open in the debug session.
+5. Return to the terminal and type `OK` when the script asks for confirmation.
+6. Any response other than `OK` must end the run cleanly before navigation.
 
-## 4. Execution Commands
+The CDP helper refuses to pick a target if there are zero or multiple `type === "page"` targets.
 
-To run the verification process for a single CSV file:
+## 4. Data And Scraping Rules
+
+- Treat the CSV as the source of truth for row count, grouping inputs, and country values.
+- Read CSV files with BOM-safe handling. Albania currently means `90` rows and `23` unique properties unless the CSV changes.
+- Group unique properties by `(base_url, hotel_name)`, where `base_url` is the Booking URL without query parameters.
+- Country fallback order is `kraj`, then `\ufeffkraj`, then `Destynacja`.
+- For prices, record the minimum numeric value found in visible Booking price nodes for the current page.
+- For room details, preserve the currently visible Booking room table as rendered on the page. Do not claim complete room-option coverage beyond what is visible.
+- If navigation, evaluation, CAPTCHA recovery, or CDP commands fail, let the existing retry or `TBD` flow handle it.
+
+## 5. Run Command
+
 ```bash
 python3 /Users/krz/Dev/holidai/scrape/verify_matrix.py [/Users/krz/Dev/holidai/research/booking_matrix_turcja_kreta.csv]
 ```
-If no argument is passed, it defaults to `booking_matrix_turcja_kreta.csv`.
-Progress is tracked and printed automatically on launch from `{csv_base}_cache.json`.
+
+If no CSV argument is passed, the script defaults to `booking_matrix_turcja_kreta.csv`.
+
+## 6. Verification Notes
+
+- Python syntax check:
+
+```bash
+PYTHONPYCACHEPREFIX=/tmp/holidai-pycache python3 -m py_compile /Users/krz/Dev/holidai/scrape/verify_matrix.py /Users/krz/Dev/holidai/chrome-scrape-control/chrome_control.py
+```
+
+- JS syntax check:
+
+```bash
+node --check /Users/krz/Dev/holidai/chrome-scrape-control/cdp_helper.js
+node --check /Users/krz/Dev/holidai/scrape/cdp_helper.js
+```
+
+- CSV sanity check:
+
+```bash
+python3 -c 'import csv, urllib.parse; rows=list(csv.DictReader(open("/Users/krz/Dev/holidai/research/booking_matrix_albania.csv", encoding="utf-8-sig"))); bases={(urllib.parse.urlparse(r["link"]).scheme, urllib.parse.urlparse(r["link"]).netloc, urllib.parse.urlparse(r["link"]).path, r["nazwa"]) for r in rows}; print(len(rows), len(bases), rows[0]["kraj"])'
+```
+
+Expected output: `90 23 Albania`.

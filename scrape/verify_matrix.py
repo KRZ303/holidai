@@ -10,6 +10,10 @@ from urllib.parse import urlparse
 
 # SCRIPT LOCATION & PATH SETUP
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_ENCODING = "utf-8-sig"
+PYTHON_EVAL_TIMEOUT_SECONDS = 60
+CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_PROFILE_DIR = os.path.join(SCRIPT_DIR, "chrome-profile")
 
 # Default input CSV path
 DEFAULT_CSV = "/Users/krz/Dev/holidai/research/booking_matrix_turcja_kreta.csv"
@@ -222,36 +226,66 @@ def is_port_open(port):
         except OSError:
             return False
 
+def read_csv_rows(csv_path):
+    with open(csv_path, "r", encoding=CSV_ENCODING, newline="") as f:
+        reader = csv.DictReader(f)
+        return reader.fieldnames, list(reader)
+
+def get_country_name(row):
+    return row.get("kraj") or row.get("\ufeffkraj") or row.get("Destynacja") or "Destynacja"
+
+def build_property_key(row):
+    link = row.get("link")
+    if not link:
+        return None
+    parsed = urlparse(link)
+    base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    hotel_name = (row.get("nazwa") or "").strip()
+    return (base_url, hotel_name)
+
+def group_rows_by_property(rows):
+    unique_hotels = {}
+    for idx, row in enumerate(rows, start=2):
+        key = build_property_key(row)
+        if key is None:
+            continue
+        unique_hotels.setdefault(key, []).append((idx, row))
+    return unique_hotels
+
+def confirm_booking_tab_ready():
+    print("\n======================================================================")
+    print("Confirm Google Chrome is logged in to Booking.com and exactly one")
+    print("Booking.com tab is open in the debug session.")
+    print("Type OK to continue. Any other input exits before navigation.")
+    print("======================================================================")
+    confirmation = input("> ").strip()
+    if confirmation != "OK":
+        print("Did not receive OK. Exiting before navigation.")
+        return False
+    return True
+
 def ensure_browser():
     if is_port_open(9222):
         print("Found active Chrome debugger on port 9222.")
         return True
         
-    print("No active Chrome debugger found on port 9222. Attempting to launch Chrome...")
-    chrome_stable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    chrome_beta = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-    
-    if os.path.exists(chrome_stable):
-        path = chrome_stable
-    elif os.path.exists(chrome_beta):
-        path = chrome_beta
-    else:
-        print("Error: Neither Google Chrome nor Google Chrome Beta was found in /Applications.")
-        print("Please start Chrome manually with remote debugging enabled:")
-        print("  --remote-debugging-port=9222 --user-data-dir=...")
+    print("No active Chrome debugger found on port 9222. Attempting to launch Google Chrome...")
+    if not os.path.exists(CHROME_BINARY):
+        print("Error: Google Chrome was not found at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome.")
+        print("Install stable Google Chrome or launch it manually with:")
+        print(f"  {CHROME_BINARY} --remote-debugging-port=9222 --user-data-dir={CHROME_PROFILE_DIR} https://www.booking.com")
         return False
         
-    profile_dir = os.path.join(SCRIPT_DIR, "chrome-profile")
-    os.makedirs(profile_dir, exist_ok=True)
+    os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
     
     cmd = [
-        path,
+        CHROME_BINARY,
         "--remote-debugging-port=9222",
-        f"--user-data-dir={profile_dir}",
+        f"--user-data-dir={CHROME_PROFILE_DIR}",
         "https://www.booking.com"
     ]
     
-    print(f"Launching {os.path.basename(path)}...")
+    print("Launching Google Chrome...")
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     # Wait for port to open
@@ -263,13 +297,6 @@ def ensure_browser():
     else:
         print("Error: Timed out waiting for Chrome to listen on port 9222.")
         return False
-    
-    print("\n======================================================================")
-    print("IMPORTANT: If you are not logged in, please log in to your Booking.com account")
-    print("in the newly opened browser window (to apply Genius discounts/settings).")
-    print("Once you are ready, press ENTER in this terminal to continue...")
-    print("======================================================================\n")
-    input()
     return True
 
 def run_agent_browser_open(url):
@@ -283,11 +310,19 @@ def run_agent_browser_open(url):
     except Exception as e:
         return False, str(e)
 
-def run_agent_browser_eval(script):
+def run_agent_browser_eval(script, timeout=PYTHON_EVAL_TIMEOUT_SECONDS):
     try:
         helper_path = os.path.join(os.path.dirname(SCRIPT_DIR), "chrome-scrape-control", "cdp_helper.js")
         proc = subprocess.Popen(["node", helper_path, "eval"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = proc.communicate(input=script)
+        try:
+            stdout, stderr = proc.communicate(input=script, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            timeout_message = f"Timed out after {timeout} seconds while evaluating browser script."
+            if stderr.strip():
+                timeout_message = f"{timeout_message} {stderr.strip()}"
+            return None, timeout_message
         if proc.returncode == 0:
             return stdout.strip(), None
         else:
@@ -323,38 +358,24 @@ def main():
     if not ensure_browser():
         print("Failed to ensure browser is running. Exiting.")
         sys.exit(1)
+    if not confirm_booking_tab_ready():
+        sys.exit(0)
         
     os.makedirs(MD_DIR, exist_ok=True)
     cache = load_cache()
     
     print(f"Reading CSV file {CSV_PATH}...")
-    rows = []
-    with open(CSV_PATH, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        for r in reader:
-            rows.append(r)
+    fieldnames, rows = read_csv_rows(CSV_PATH)
             
     print(f"Loaded {len(rows)} rows from CSV.")
     
-    # Group rows by base hotel URL and name to process unique hotels
-    unique_hotels = {}
-    for idx, row in enumerate(rows, start=2):
-        link = row.get('link')
-        if not link:
-            continue
-        parsed = urlparse(link)
-        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        if base_url not in unique_hotels:
-            unique_hotels[base_url] = []
-        unique_hotels[base_url].append((idx, row))
-        
-    print(f"Mapped {len(unique_hotels)} unique hotels.")
+    unique_hotels = group_rows_by_property(rows)
+    print(f"Mapped {len(unique_hotels)} unique properties from CSV.")
     
     # Calculate progress
     # Let's count how many unique hotels are already completely cached in cache
     cached_count = 0
-    for base_url, occurrence_list in unique_hotels.items():
+    for _, occurrence_list in unique_hotels.items():
         all_cached = True
         for row_idx, r in occurrence_list:
             url = r.get('link')
@@ -367,10 +388,9 @@ def main():
     print(f"Progress: {cached_count}/{len(unique_hotels)} unique hotels already verified in cache.")
     
     # Process unique hotels
-    for hotel_idx, (base_url, occurrence_list) in enumerate(unique_hotels.items(), 1):
+    for hotel_idx, ((base_url, hotel_name), occurrence_list) in enumerate(unique_hotels.items(), 1):
         first_row_idx, first_row = occurrence_list[0]
-        hotel_name = first_row.get('nazwa')
-        country = first_row.get('kraj', 'Destynacja')
+        country = get_country_name(first_row)
         
         # Check if all links for this hotel are already cached
         all_cached = True
@@ -661,9 +681,7 @@ def main():
     print(f"Generating discrepancies report to: {DISCREPANCIES_PATH}...")
     discrepancies = []
     
-    with open(CSV_PATH, "r", encoding="utf-8") as f_orig:
-        orig_reader = csv.DictReader(f_orig)
-        orig_rows = list(orig_reader)
+    _, orig_rows = read_csv_rows(CSV_PATH)
         
     for i, (orig, updated) in enumerate(zip(orig_rows, rows), start=2):
         name = orig.get('nazwa')

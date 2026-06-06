@@ -1,112 +1,92 @@
 ---
 name: chrome-scrape-control
-description: Use when you need to perform automated scraping in Google Chrome/Chrome Beta using the CDP protocol directly inside a single browser tab, reusing existing logged-in sessions and avoiding extra window or tab locks.
+description: Use when you need lightweight CDP control over a logged-in stable Google Chrome tab for Booking-style scraping without spawning any secondary browser automation.
 ---
 
 # Chrome Scrape Control
 
 ## Overview
-This skill provides a highly reliable and lightweight browser automation framework utilizing Google Chrome's native Chrome DevTools Protocol (CDP) over WebSockets. Unlike standard automation suites (which launch headless, unauthenticated browsers or spawn multiple headed windows that trigger security alerts), this framework connects to a headed Chrome instance (stable or Beta) with a dedicated profile and navigates **strictly inside a single active tab**, preserving cookies and active logins (e.g. Booking.com, Google).
 
-> [!WARNING]
-> **CRITICAL RULE FOR AI AGENTS:** DO NOT invoke `browser_subagent`, `chrome-devtools` MCP, or any other browser tools when using this skill. Doing so triggers a separate, unauthenticated browser window that interferes with the active scraping tab. Only use `run_command` to execute scripts that interact with port 9222.
+This skill connects to Google Chrome through the native Chrome DevTools Protocol on port `9222` and reuses the user-owned logged-in session.
+
+Hard rules:
+
+- Use stable Google Chrome, not Chrome Beta.
+- Use one foreground terminal session only.
+- Do not use browser tools, subagents, timers, monitors, or watcher loops around scraper runs.
+- The user owns tab readiness: log in, leave exactly one Booking.com tab open, then confirm in the terminal.
+- The helper refuses to proceed unless CDP exposes exactly one `type === "page"` target.
+
+## Launch Command
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="./chrome-profile" "https://www.booking.com"
+```
 
 ## Workflow
 
 ```mermaid
 graph TD
-    A[Start Scraper] --> B{Is Chrome Debugger active on 9222?}
-    B -- Yes --> D[Connect directly to active tab WS]
-    B -- No --> C[Launch Chrome in debug mode with isolated profile]
-    C --> E[Wait for port 9222 to open]
-    E --> F[Open Target Homepage]
-    F --> G[Prompt User to Login in Terminal]
-    G --> H[Wait for ENTER key]
-    H --> D
-    D --> I[Run Scraper Loop]
-    I --> J[Navigate Tab via CDP helper Page.navigate]
-    J --> K[Wait for content to settle]
-    K --> L[Evaluate JS via Runtime.evaluate IIFE wrapper]
-    L --> M[Extract data & write to local outputs]
-    M --> N{More pages?}
-    N -- Yes --> I
-    N -- No --> O[Close connection & Finish]
+    A[Start scraper or helper] --> B{Port 9222 open?}
+    B -- no --> C[Launch stable Google Chrome with dedicated profile]
+    B -- yes --> D[Use existing debug session]
+    C --> D
+    D --> E[User logs in and leaves exactly one Booking.com tab open]
+    E --> F[User types OK in terminal]
+    F --> G[Helper checks CDP targets]
+    G --> H{Exactly one page target?}
+    H -- no --> I[Exit with explicit error]
+    H -- yes --> J[Navigate or evaluate]
+    J --> K[CDP command timeout: 30s]
+    K --> L[Python eval timeout: 60s]
 ```
 
-## Quick Reference
+## Helper Files
 
-To launch Chrome with the required debugging port and isolated profile:
+1. [cdp_helper.js](/Users/krz/Dev/holidai/chrome-scrape-control/cdp_helper.js)
+   - navigates the active Booking.com tab
+   - evaluates JavaScript in that tab
+   - rejects zero-page and multi-page target states
+   - times out CDP commands after 30 seconds
+2. [chrome_control.py](/Users/krz/Dev/holidai/chrome-scrape-control/chrome_control.py)
+   - ensures stable Google Chrome is running on port `9222`
+   - launches a dedicated profile when needed
+   - enforces timeout-aware `eval` subprocess calls
+
+## Terminal Examples
+
 ```bash
-# macOS - Google Chrome Stable
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="./chrome-profile" "https://www.booking.com"
+# Navigate the single active Booking.com tab
+node chrome-scrape-control/cdp_helper.js navigate "https://www.booking.com"
 
-# macOS - Google Chrome Beta
-"/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta" --remote-debugging-port=9222 --user-data-dir="./chrome-profile" "https://www.booking.com"
+# Evaluate JavaScript in that tab
+node chrome-scrape-control/cdp_helper.js eval "() => ({ title: document.title, url: window.location.href })"
 ```
 
-To run a navigation or evaluate command using the CDP helper:
-```bash
-# Navigate active tab to a new URL
-node cdp_helper.js navigate "https://www.example.com"
-
-# Evaluate JavaScript on the active tab and print JSON results
-node cdp_helper.js eval "() => { return { title: document.title, url: window.location.href }; }"
-```
-
-## Implementation Details
-
-The skill includes the following core components in the `chrome-scrape-control/` directory:
-
-1. [cdp_helper.js](file:///Users/krz/Dev/holidai/chrome-scrape-control/cdp_helper.js) - A zero-dependency Node.js script using the native `WebSocket` API (Node 22+) to connect to Chrome on port 9222.
-   - **`navigate` action:** Navigates the current tab directly via CDP `Page.navigate`.
-   - **`eval` action:** Evaluates a JS string or function on the active tab via CDP `Runtime.evaluate`, automatically wrapping arrow function definitions in IIFEs `(async () => { ... })()` for execution.
-2. [chrome_control.py](file:///Users/krz/Dev/holidai/chrome-scrape-control/chrome_control.py) - A reusable Python module containing helper functions to check/launch debugging Chrome with an isolated profile and run commands using `cdp_helper.js`.
-
-### Reusable Code Templates
-
-#### Python Integration Example (Direct Subprocess)
-To call `cdp_helper.js` directly from any Python scraping script:
-```python
-import subprocess
-import os
-
-def navigate_tab(url):
-    proc = subprocess.run(["node", "chrome-scrape-control/cdp_helper.js", "navigate", url], capture_output=True, text=True)
-    return proc.returncode == 0
-
-def eval_in_tab(js_code):
-    proc = subprocess.Popen(["node", "chrome-scrape-control/cdp_helper.js", "eval"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    stdout, stderr = proc.communicate(input=js_code)
-    if proc.returncode == 0:
-        return stdout.strip()
-    return None
-```
-
-#### Python Integration Example (Using `chrome_control.py`)
-To use the helper module (resolving the hyphen in the package directory path dynamically):
 ```python
 import sys
 import importlib.util
 
-# Dynamically import chrome_control.py from the hyphenated directory
-spec = importlib.util.spec_from_file_location("chrome_control", "chrome-scrape-control/chrome_control.py")
+spec = importlib.util.spec_from_file_location(
+    "chrome_control",
+    "chrome-scrape-control/chrome_control.py",
+)
 chrome_control = importlib.util.module_from_spec(spec)
 sys.modules["chrome_control"] = chrome_control
 spec.loader.exec_module(chrome_control)
 
-# 1. Ensure browser is open on port 9222 with an isolated profile
-success = chrome_control.ensure_browser(
+if chrome_control.ensure_browser(
     port=9222,
     profile_dir="scrape/chrome-profile",
     default_url="https://www.booking.com",
-    login_prompt="Please log in to Booking.com in the browser."
-)
+    login_prompt="Confirm the stable Chrome scraper window is logged in and has exactly one Booking.com tab open.",
+):
+    ok, err = chrome_control.run_chrome_open("https://www.booking.com")
+    if not ok:
+        raise RuntimeError(err)
 
-if success:
-    # 2. Navigate tab
-    chrome_control.run_chrome_open("https://www.booking.com")
-    
-    # 3. Evaluate JavaScript
-    result, err = chrome_control.run_chrome_eval("() => document.title")
-    print("Page Title:", result)
+    result, err = chrome_control.run_chrome_eval("() => document.title", timeout=60)
+    if err:
+        raise RuntimeError(err)
+    print(result)
 ```
