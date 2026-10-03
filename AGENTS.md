@@ -375,9 +375,9 @@ Before editing, identify whether a file is source, generated output, dependency 
 
 Project-specific boundaries:
 
-- The root workspace is a public GitHub repository at `https://github.com/krzkraw/holidai.git` on branch `main`.
+- The root workspace is a public GitHub repository at `https://github.com/KRZ303/holidai.git` on branch `main`.
 - GitHub Pages for the root repository is deployed by a GitHub Actions workflow and publishes `index.html`, `ultimate/`, `gpt/ultimate-desktop.html`, `gpt/ultimate-mobile.html`, `gemini/2026-holidai-v1.html`, and `gemini/2026-holidai-v2.html`.
-- `booking-scraper-flow/` is a private Git submodule at `https://github.com/krzkraw/booking-scraper-flow.git` with its own `AGENTS.md`; follow it when working there.
+- `booking-scraper-flow/` is a private Git submodule at `https://github.com/KRZ303/booking-scraper-flow.git` with its own `AGENTS.md`; follow it when working there.
 - Commit and push root changes in the root repository. Commit and push nested scraper changes inside `booking-scraper-flow/` first, then update and commit the root submodule pointer.
 - Treat `booking-scraper-flow/examples/booking/` as reference/example data unless the user asks to regenerate examples.
 - Treat `gpt/sources/` as source material and previous report artifacts. Do not overwrite it unless explicitly updating the vacation-report source set.

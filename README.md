@@ -22,7 +22,7 @@ The `ultimate-dashboard/` package has its own npm lockfile and build/test comman
 Clone the public root repository:
 
 ```bash
-git clone https://github.com/krzkraw/holidai.git
+git clone https://github.com/KRZ303/holidai.git
 ```
 
 If you also need the private `booking-scraper-flow` submodule and have access to it, initialize it afterward:
@@ -140,14 +140,14 @@ gemini/2026-holidai-v2.html
 
 The root workspace is a public GitHub repository:
 
-- `origin`: `https://github.com/krzkraw/holidai.git`
+- `origin`: `https://github.com/KRZ303/holidai.git`
 - default branch: `main`
 - GitHub Pages will publish from a GitHub Actions workflow
 - expected site URL: `https://krzkraw.github.io/holidai/`
 
 The nested `booking-scraper-flow/` directory is included as a private Git submodule:
 
-- submodule remote: `https://github.com/krzkraw/booking-scraper-flow.git`
+- submodule remote: `https://github.com/KRZ303/booking-scraper-flow.git`
 - submodule branch: `main`
 - configured in `.gitmodules`
 
